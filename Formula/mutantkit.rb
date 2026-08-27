@@ -1,9 +1,9 @@
 class Mutantkit < Formula
   desc "Trustworthy mutation testing for Swift and Apple platforms"
   homepage "https://github.com/juntaki/mutantkit"
-  url "https://github.com/juntaki/mutantkit/releases/download/v0.1.0/mutantkit-macos-arm64.tar.gz"
-  sha256 "27226988ef5e9a58ed93904fd767b341976a432fe1bebcc6526c1cabade2cd3e"
-  version "0.1.0"
+  url "https://github.com/juntaki/mutantkit/releases/download/v0.2.0/mutantkit-macos-arm64.tar.gz"
+  version "0.2.0"
+  sha256 "3a314b4213afe3dd706d6dd5d7e5f9308eda81a19ecf8fab6d3a09be08b9d7fc"
   license "Apache-2.0"
 
   depends_on arch: :arm64
