@@ -1,0 +1,100 @@
+name: Sync release
+
+# v1 contract (2026-09-12): this tap must never drift from
+# juntaki/mutantkit's latest release the way it did through v0.2.0, where
+# the formula stayed pinned to an old version -- unbumped across a whole
+# later release -- with nothing anywhere noticing. This workflow is the
+# fix: given a version, it fetches that exact release's real assets,
+# updates the formula to match, install-tests the result for real (not
+# just a syntax check), and only then commits.
+#
+# Idempotent by design: re-running with the same version input either
+# produces no change (already in sync -- the commit step is a no-op) or
+# converges to the same formula content every time. Safe to trigger more
+# than once for the same release.
+#
+# Triggered by juntaki/mutantkit's own release.yml via workflow_dispatch,
+# using a token scoped only to triggering this workflow -- this repo's own
+# commit uses its own repo-scoped GITHUB_TOKEN below, never a token
+# handed in from outside.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to sync to, e.g. 0.3.0 or v0.3.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Normalize version/tag
+        id: version
+        run: |
+          set -euo pipefail
+          raw="${{ inputs.version }}"
+          version="${raw#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the real release assets (public repo, no token needed)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/release-assets
+          gh release download "${{ steps.version.outputs.tag }}" \
+            --repo juntaki/mutantkit \
+            -p "mutantkit-macos-arm64.tar.gz" -p "SHA256SUMS" \
+            --dir /tmp/release-assets --clobber
+
+      - name: Verify the downloaded tarball against the release's own checksum
+        id: sha
+        run: |
+          set -euo pipefail
+          cd /tmp/release-assets
+          shasum -a 256 -c SHA256SUMS
+          sha256=$(grep 'mutantkit-macos-arm64.tar.gz' SHA256SUMS | awk '{print $1}')
+          test -n "$sha256"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Update Formula/mutantkit.rb
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          tag="${{ steps.version.outputs.tag }}"
+          sha256="${{ steps.sha.outputs.sha256 }}"
+          sed -i '' -E \
+            -e "s#(releases/download/)v[0-9A-Za-z.+-]+(/mutantkit-macos-arm64\.tar\.gz)#\1${tag}\2#" \
+            -e "s#^  version \".*\"\$#  version \"${version}\"#" \
+            -e "s#^  sha256 \".*\"\$#  sha256 \"${sha256}\"#" \
+            Formula/mutantkit.rb
+          cat Formula/mutantkit.rb
+
+      # Real install + the formula's own test block, on the exact runner
+      # OS this formula targets -- not a syntax check. This is what would
+      # have caught the v0.2.0-era formula only installing a binary with
+      # no bundled schemata runtime: `brew test` runs the layout
+      # assertions in Formula/mutantkit.rb's own `test do` block.
+      - name: Install-test the updated formula
+        run: |
+          set -euo pipefail
+          brew install --formula Formula/mutantkit.rb
+          brew test mutantkit
+
+      - name: Commit and push if the formula actually changed
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- Formula/mutantkit.rb; then
+            echo "Formula/mutantkit.rb already matches ${{ steps.version.outputs.tag }}; nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/mutantkit.rb
+          git commit -m "mutantkit ${{ steps.version.outputs.version }}"
+          git push origin HEAD:main
