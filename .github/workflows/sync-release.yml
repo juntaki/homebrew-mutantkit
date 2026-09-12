@@ -80,11 +80,21 @@ jobs:
       # have caught the v0.2.0-era formula only installing a binary with
       # no bundled schemata runtime: `brew test` runs the layout
       # assertions in Formula/mutantkit.rb's own `test do` block.
+      # `brew install --formula <path>` refuses a bare checkout ("Homebrew
+      # requires formulae to be in a tap") even though this checkout *is*
+      # the tap's own repo -- Homebrew only recognizes a formula as
+      # belonging to a tap by path shape
+      # ($(brew --repository)/Library/Taps/<user>/homebrew-<repo>/...),
+      # never by the git remote a plain checkout happens to have. Tapping
+      # this exact working directory under its real name makes
+      # `juntaki/mutantkit/mutantkit` resolve to the formula this job just
+      # edited, not whatever is on the remote's default branch.
       - name: Install-test the updated formula
         run: |
           set -euo pipefail
-          brew install --formula Formula/mutantkit.rb
-          brew test mutantkit
+          brew tap juntaki/mutantkit "$(pwd)"
+          brew install juntaki/mutantkit/mutantkit
+          brew test juntaki/mutantkit/mutantkit
 
       - name: Commit and push if the formula actually changed
         run: |
