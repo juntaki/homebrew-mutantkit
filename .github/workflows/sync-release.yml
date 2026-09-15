@@ -43,7 +43,20 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch the real release assets (public repo, no token needed)
+      # Real CI evidence (2026-09-15): "no token needed" was true for
+      # correctness but not for reliability -- an unauthenticated `gh
+      # release download` is capped at GitHub's 60-requests/hour
+      # *anonymous* limit, shared across every GitHub-hosted runner's
+      # egress IP range worldwide, not just this job. It failed twice in
+      # a row with "API rate limit exceeded" from two different shared
+      # IPs. `GH_TOKEN` here is this job's own repo-scoped `GITHUB_TOKEN`
+      # (never one handed in from outside, per this workflow's own header
+      # comment) -- using it for a read of a public repo's release assets
+      # only raises the rate limit to the authenticated 5,000/hour tier,
+      # it does not change what this call can access.
+      - name: Fetch the real release assets (public repo, authenticated only to avoid the anonymous rate limit)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/release-assets
