@@ -166,12 +166,30 @@ jobs:
       # detection would produce from a multi-OS matrix build; retagging a
       # single build directly gets there without needing one.
       - name: Retag the bottle as "all" (no OS-specific content to tag narrowly)
+        id: retag
         run: |
           set -euo pipefail
           json_file="${{ steps.bottle.outputs.json_file }}"
+          old_filename="${{ steps.bottle.outputs.local_filename }}"
           tmp="$(mktemp)"
           jq '.[].bottle.tags |= (to_entries[0].value as $v | {all: $v})' "$json_file" > "$tmp"
           mv "$tmp" "$json_file"
+
+          # A real `brew install` builds the download URL from
+          # "<name>-<version>.all.bottle.tar.gz" -- a single dash
+          # (Bottle::Filename#url_encode, the format Homebrew actually
+          # requests) -- not the double-dash, original-tag name `brew
+          # bottle` gave the file on disk (Bottle::Filename#to_str, for its
+          # real build tag, e.g. "mutantkit--1.0.2.arm64_sequoia.bottle
+          # .tar.gz"). Uploading the file under its original name 404s the
+          # very next step: the physical asset has to be renamed to match
+          # what `all` actually resolves to before it goes anywhere near a
+          # release.
+          name="$(jq -r '.[].formula.name' "$json_file")"
+          version="$(jq -r '.[].formula.pkg_version' "$json_file")"
+          new_filename="${name}-${version}.all.bottle.tar.gz"
+          mv "$old_filename" "$new_filename"
+          echo "local_filename=$new_filename" >> "$GITHUB_OUTPUT"
           cat "$json_file"
 
       - name: Merge the bottle block into Formula/mutantkit.rb
@@ -194,7 +212,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ steps.version.outputs.tag }}"
-          filename="${{ steps.bottle.outputs.local_filename }}"
+          filename="${{ steps.retag.outputs.local_filename }}"
           if gh release view "$tag" --repo juntaki/homebrew-mutantkit >/dev/null 2>&1; then
             gh release upload "$tag" "$filename" --repo juntaki/homebrew-mutantkit --clobber
           else
