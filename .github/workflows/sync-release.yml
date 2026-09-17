@@ -8,10 +8,30 @@ name: Sync release
 # updates the formula to match, install-tests the result for real (not
 # just a syntax check), and only then commits.
 #
+# Bottle support added 2026-09-17: root-caused against a real user's
+# `brew install` -- the formula itself declares no Xcode dependency at
+# all, but Homebrew's own generic "install a formula from source" path
+# still enforces its host's minimum-Xcode requirement before it will run
+# *any* formula's `install` block, including this one's (which only
+# copies files -- `bin.install`/`prefix.install`, no compiler ever
+# invoked). A user whose real Xcode/macOS was outdated relative to that
+# generic floor got "Your Xcode ... is too outdated. Please update to
+# Xcode 27.0", from a formula that has no actual Xcode 27 requirement of
+# its own to state. A bottle (a precompiled binary package) is what lets
+# `brew install` skip that whole source-build path -- and skip the check
+# that gates it -- entirely: it fetches and pours the bottle instead of
+# ever running `install`. This is doubly safe for this exact formula
+# specifically because it never compiles anything either way; the bottle
+# is just the identical file layout, repackaged into Homebrew's bottle
+# tar format.
+#
 # Idempotent by design: re-running with the same version input either
 # produces no change (already in sync -- the commit step is a no-op) or
 # converges to the same formula content every time. Safe to trigger more
-# than once for the same release.
+# than once for the same release. The bottle release (tagged the same as
+# the version, in this tap repo) is created idempotently too -- re-running
+# against the same version re-uploads over the existing asset rather than
+# failing on "tag already exists".
 #
 # Triggered by juntaki/mutantkit's own release.yml via workflow_dispatch,
 # using a token scoped only to triggering this workflow -- this repo's own
@@ -88,11 +108,6 @@ jobs:
             Formula/mutantkit.rb
           cat Formula/mutantkit.rb
 
-      # Real install + the formula's own test block, on the exact runner
-      # OS this formula targets -- not a syntax check. This is what would
-      # have caught the v0.2.0-era formula only installing a binary with
-      # no bundled schemata runtime: `brew test` runs the layout
-      # assertions in Formula/mutantkit.rb's own `test do` block.
       # `brew install --formula <path>` refuses a bare checkout ("Homebrew
       # requires formulae to be in a tap") even though this checkout *is*
       # the tap's own repo -- Homebrew only recognizes a formula as
@@ -101,19 +116,154 @@ jobs:
       # never by the git remote a plain checkout happens to have. Tapping
       # this exact working directory under its real name makes
       # `juntaki/mutantkit/mutantkit` resolve to the formula this job just
-      # edited, not whatever is on the remote's default branch.
-      - name: Install-test the updated formula
+      # edited, not whatever is on the remote's default branch. Done once,
+      # here, ahead of every step below that needs it.
+      - name: Tap this checkout
+        run: brew tap juntaki/mutantkit "$(pwd)"
+
+      # `--build-bottle` produces a relocatable keg suitable for
+      # packaging, without which `brew bottle` below has nothing to
+      # package. This still installs from source -- on the pinned,
+      # supported Xcode this runner carries, which is exactly why the
+      # bottle this step feeds into is what lets an end user's own,
+      # possibly-mismatched Xcode never matter for `brew install`.
+      - name: Build from source with --build-bottle
+        run: brew install --build-bottle --verbose juntaki/mutantkit/mutantkit
+
+      # `--root-url` has to name where the bottle will actually be
+      # downloadable from once uploaded (the release created two steps
+      # below) -- Homebrew bakes this URL into the formula's `bottle do`
+      # block, and `brew install` on an end user's machine fetches from
+      # exactly this URL, never anywhere else.
+      - name: Generate the bottle tarball + JSON
+        id: bottle
         run: |
           set -euo pipefail
-          brew tap juntaki/mutantkit "$(pwd)"
-          brew install juntaki/mutantkit/mutantkit
+          tag="${{ steps.version.outputs.tag }}"
+          brew bottle --json --no-rebuild \
+            --root-url "https://github.com/juntaki/homebrew-mutantkit/releases/download/${tag}" \
+            juntaki/mutantkit/mutantkit
+          json_file="$(ls ./*.bottle.json)"
+          local_filename="$(jq -r '.[].bottle.tags | to_entries[0].value.local_filename' "$json_file")"
+          test -n "$json_file" -a -n "$local_filename" -a -f "$local_filename"
+          echo "json_file=$json_file" >> "$GITHUB_OUTPUT"
+          echo "local_filename=$local_filename" >> "$GITHUB_OUTPUT"
+
+      # This formula's `install` block only copies pre-built files
+      # (`bin.install`/`prefix.install`, matching its own doc comment on
+      # why the runtime resolves paths relative to itself rather than a
+      # baked-in absolute one) -- nothing about the resulting bottle is
+      # specific to this runner's own macOS version the way a formula that
+      # actually compiles native code would be. Retagging the single tag
+      # `brew bottle` produced (this runner's real OS, e.g.
+      # `arm64_sequoia`) as `all` is what makes `brew install` pour this
+      # one bottle on *every* macOS version -- including a version newer
+      # than any GitHub Actions runner image offers yet, which is exactly
+      # the situation the user report that started this whole change was
+      # in. `Utils::Bottles::Tag.from_symbol(:all)` (Homebrew's own
+      # dev-cmd/bottle.rb) is a real, first-class tag, not a hack -- this
+      # is the same shape `brew bottle`'s own automatic all-bottle
+      # detection would produce from a multi-OS matrix build; retagging a
+      # single build directly gets there without needing one.
+      - name: Retag the bottle as "all" (no OS-specific content to tag narrowly)
+        id: retag
+        run: |
+          set -euo pipefail
+          json_file="${{ steps.bottle.outputs.json_file }}"
+          old_filename="${{ steps.bottle.outputs.local_filename }}"
+          tmp="$(mktemp)"
+          jq '.[].bottle.tags |= (to_entries[0].value as $v | {all: $v})' "$json_file" > "$tmp"
+          mv "$tmp" "$json_file"
+
+          # A real `brew install` builds the download URL from
+          # "<name>-<version>.all.bottle.tar.gz" -- a single dash
+          # (Bottle::Filename#url_encode, the format Homebrew actually
+          # requests) -- not the double-dash, original-tag name `brew
+          # bottle` gave the file on disk (Bottle::Filename#to_str, for its
+          # real build tag, e.g. "mutantkit--1.0.2.arm64_sequoia.bottle
+          # .tar.gz"). Uploading the file under its original name 404s the
+          # very next step: the physical asset has to be renamed to match
+          # what `all` actually resolves to before it goes anywhere near a
+          # release.
+          name="$(jq -r '.[].formula.name' "$json_file")"
+          version="$(jq -r '.[].formula.pkg_version' "$json_file")"
+          new_filename="${name}-${version}.all.bottle.tar.gz"
+          mv "$old_filename" "$new_filename"
+          echo "local_filename=$new_filename" >> "$GITHUB_OUTPUT"
+          cat "$json_file"
+
+      # `--write` edits the formula `Formulary.factory` actually resolved
+      # while tapping -- `brew tap <name> <path>` *clones* `<path>` into
+      # `$(brew --repository)/Library/Taps/...` rather than referencing it
+      # in place (confirmed against a real local run: "Cloning into
+      # '.../Taps/juntaki/homebrew-mutantkit'... done."), so this writes
+      # into that separate clone, never into $GITHUB_WORKSPACE's own
+      # checkout. Copying it back is what makes "Commit and push" below
+      # see a real diff at all -- caught by this workflow's own second
+      # live dispatch, which finished green end-to-end (bottle built,
+      # uploaded, poured) but then silently reported "already matches;
+      # nothing to commit" and never pushed anything, because the
+      # checkout it diffed still had no bottle block.
+      - name: Merge the bottle block into Formula/mutantkit.rb
+        run: |
+          set -euo pipefail
+          brew bottle --merge --write --no-commit "${{ steps.bottle.outputs.json_file }}"
+          cp "$(brew --repository)/Library/Taps/juntaki/homebrew-mutantkit/Formula/mutantkit.rb" Formula/mutantkit.rb
+          cat Formula/mutantkit.rb
+
+      # Uploads the actual bottle bytes to a release in *this* (tap) repo,
+      # tagged the same as the version -- the exact URL the `bottle do`
+      # block just written now names via --root-url above. Idempotent: a
+      # re-run for a version already synced re-uploads over the existing
+      # asset (`--clobber`) instead of failing on "tag already exists".
+      # This has to happen before the reinstall test below, which proves
+      # a real end-to-end pour from this exact URL, not merely that the
+      # bottle file exists locally.
+      - name: Upload the bottle to a same-tagged release in this tap repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+          filename="${{ steps.retag.outputs.local_filename }}"
+          if gh release view "$tag" --repo juntaki/homebrew-mutantkit >/dev/null 2>&1; then
+            gh release upload "$tag" "$filename" --repo juntaki/homebrew-mutantkit --clobber
+          else
+            gh release create "$tag" "$filename" \
+              --repo juntaki/homebrew-mutantkit \
+              --title "mutantkit ${{ steps.version.outputs.version }} (bottle)" \
+              --notes "Precompiled bottle asset for juntaki/mutantkit \`${tag}\`, consumed by Formula/mutantkit.rb's \`bottle do\` block. Not a standalone release -- see juntaki/mutantkit's own release notes for what changed in this version."
+          fi
+
+      # Real install + the formula's own test block, on the exact runner
+      # OS this formula targets -- not a syntax check. This is what would
+      # have caught the v0.2.0-era formula only installing a binary with
+      # no bundled schemata runtime: `brew test` runs the layout
+      # assertions in Formula/mutantkit.rb's own `test do` block.
+      #
+      # Uninstalling first and reinstalling clean (no `--build-bottle`,
+      # matching exactly what a real end user's `brew install` runs) is
+      # what actually proves the bottle just uploaded pours correctly from
+      # its real, public URL -- reusing the `--build-bottle` keg from
+      # above would only prove the source build worked, which was never
+      # the thing in question.
+      - name: Reinstall clean and verify the bottle actually pours (not a source rebuild)
+        run: |
+          set -euo pipefail
+          brew uninstall juntaki/mutantkit/mutantkit
+          brew install --verbose juntaki/mutantkit/mutantkit 2>&1 | tee /tmp/install.log
+          grep -q "Pouring" /tmp/install.log || {
+            echo "::error::brew install did not report pouring a bottle -- it may have fallen back to building from source, which defeats the entire point of this workflow's bottle support."
+            cat /tmp/install.log
+            exit 1
+          }
           brew test juntaki/mutantkit/mutantkit
 
       - name: Commit and push if the formula actually changed
         run: |
           set -euo pipefail
           if git diff --quiet -- Formula/mutantkit.rb; then
-            echo "Formula/mutantkit.rb already matches ${{ steps.version.outputs.tag }}; nothing to commit."
+            echo "Formula/mutantkit.rb already matches ${{ steps.version.outputs.tag }} (bottle included); nothing to commit."
             exit 0
           fi
           git config user.name "github-actions[bot]"
