@@ -192,10 +192,23 @@ jobs:
           echo "local_filename=$new_filename" >> "$GITHUB_OUTPUT"
           cat "$json_file"
 
+      # `--write` edits the formula `Formulary.factory` actually resolved
+      # while tapping -- `brew tap <name> <path>` *clones* `<path>` into
+      # `$(brew --repository)/Library/Taps/...` rather than referencing it
+      # in place (confirmed against a real local run: "Cloning into
+      # '.../Taps/juntaki/homebrew-mutantkit'... done."), so this writes
+      # into that separate clone, never into $GITHUB_WORKSPACE's own
+      # checkout. Copying it back is what makes "Commit and push" below
+      # see a real diff at all -- caught by this workflow's own second
+      # live dispatch, which finished green end-to-end (bottle built,
+      # uploaded, poured) but then silently reported "already matches;
+      # nothing to commit" and never pushed anything, because the
+      # checkout it diffed still had no bottle block.
       - name: Merge the bottle block into Formula/mutantkit.rb
         run: |
           set -euo pipefail
           brew bottle --merge --write --no-commit "${{ steps.bottle.outputs.json_file }}"
+          cp "$(brew --repository)/Library/Taps/juntaki/homebrew-mutantkit/Formula/mutantkit.rb" Formula/mutantkit.rb
           cat Formula/mutantkit.rb
 
       # Uploads the actual bottle bytes to a release in *this* (tap) repo,
