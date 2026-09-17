@@ -8,6 +8,11 @@ class Mutantkit < Formula
   sha256 "64faf2097ea93136f3db3c14125e7b638c4110250583eac2909c4249635bc097"
   license "Apache-2.0"
 
+  bottle do
+    root_url "https://github.com/juntaki/homebrew-mutantkit/releases/download/v1.0.2"
+    sha256 cellar: :any_skip_relocation, all: "c9e071bd0139366a42b402495a6b97d57a4546770493aecab3b10343cb622303"
+  end
+
   depends_on arch: :arm64
   depends_on :macos
 
