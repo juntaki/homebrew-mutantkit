@@ -9,8 +9,8 @@ class Mutantkit < Formula
   license "Apache-2.0"
 
   bottle do
-    root_url "https://github.com/juntaki/homebrew-mutantkit/releases/download/v1.0.2"
-    sha256 cellar: :any_skip_relocation, all: "c9e071bd0139366a42b402495a6b97d57a4546770493aecab3b10343cb622303"
+    root_url "https://github.com/juntaki/homebrew-mutantkit/releases/download/v1.0.3"
+    sha256 cellar: :any_skip_relocation, all: "e9991c6a1c403e87244e700a852975349af66b7286c94173061a1081097b6c7e"
   end
 
   depends_on arch: :arm64
