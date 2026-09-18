@@ -121,6 +121,26 @@ jobs:
       - name: Tap this checkout
         run: brew tap juntaki/mutantkit "$(pwd)"
 
+      # `brew tap <path>` clones from `<path>`'s git history, not its
+      # working tree -- so the version/url/sha256 bump the sed step above
+      # just made to $GITHUB_WORKSPACE's Formula/mutantkit.rb is invisible
+      # to the clone it just created (that clone still has whatever was
+      # last *committed*). Every install/bottle step below resolves the
+      # formula through the tap, so without this copy they'd all silently
+      # operate on the previous, stale version -- exactly what happened for
+      # the real v1.0.3 sync: the bottle block got merged in pointing at
+      # v1.0.3, but the url/version/sha256 fields stayed at v1.0.2, because
+      # this gap let the tap clone (and therefore the bottle build itself)
+      # stay on v1.0.2 the whole time. Testing this workflow never caught
+      # it because every prior dispatch re-ran a version that was already
+      # committed, making the sed step a no-op with nothing for this gap to
+      # hide. Copying the checkout's file over the clone's is the same
+      # direction as (and narrower than) the later "Merge the bottle block"
+      # step's own copy-back -- both exist because `brew tap`'s clone
+      # semantics never update on their own.
+      - name: Copy the version bump into the tap clone (brew tap cloned the old committed formula)
+        run: cp Formula/mutantkit.rb "$(brew --repository)/Library/Taps/juntaki/homebrew-mutantkit/Formula/mutantkit.rb"
+
       # `--build-bottle` produces a relocatable keg suitable for
       # packaging, without which `brew bottle` below has nothing to
       # package. This still installs from source -- on the pinned,
@@ -258,6 +278,24 @@ jobs:
             exit 1
           }
           brew test juntaki/mutantkit/mutantkit
+
+      # `brew test`'s own assertion (`assert_match "mutantkit #{version}",
+      # ...`) compares the installed binary against the formula's *own*
+      # `version` field -- so a formula stuck on a stale version, like the
+      # real v1.0.3 sync that shipped a v1.0.2 binary under a v1.0.3-tagged
+      # bottle release, passes that check trivially: both sides read the
+      # same stale value. This checks the installed binary against the
+      # version this workflow run was actually *asked* to sync to, which is
+      # the only thing that can catch that class of drift.
+      - name: Verify the installed version matches the version this run was asked to sync to
+        run: |
+          set -euo pipefail
+          expected="${{ steps.version.outputs.version }}"
+          installed="$(mutantkit --version | awk 'NR==1{print $2}')"
+          if [ "$installed" != "$expected" ]; then
+            echo "::error::installed version '$installed' does not match the requested sync version '$expected' -- the formula likely resolved against stale (pre-bump) content somewhere in this workflow."
+            exit 1
+          fi
 
       - name: Commit and push if the formula actually changed
         run: |
