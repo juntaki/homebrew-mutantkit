@@ -3,14 +3,14 @@ require "json"
 class Mutantkit < Formula
   desc "Trustworthy mutation testing for Swift and Apple platforms"
   homepage "https://github.com/juntaki/mutantkit"
-  url "https://github.com/juntaki/mutantkit/releases/download/v1.1.1/mutantkit-macos-arm64.tar.gz"
-  version "1.1.1"
-  sha256 "251ea4524292cba38feeb1a6318b576df50c2ef52bd1d49951a38d55b3b5b6ae"
+  url "https://github.com/juntaki/mutantkit/releases/download/v1.2.0/mutantkit-macos-arm64.tar.gz"
+  version "1.2.0"
+  sha256 "7043e08fc0d4e504f8905260cb35450c40cf562312fe04d8f3f7187f0cfdbadb"
   license "Apache-2.0"
 
   bottle do
-    root_url "https://github.com/juntaki/homebrew-mutantkit/releases/download/v1.1.1"
-    sha256 cellar: :any_skip_relocation, all: "387241c9ea0cdb3990d21e966596e38a5bbd481061416071ee36966b5f20e7e3"
+    root_url "https://github.com/juntaki/homebrew-mutantkit/releases/download/v1.2.0"
+    sha256 cellar: :any_skip_relocation, all: "31efd89f3d565fa90a0db188d7ae5f9f6950fa0aa6772e7a0d3aebf05967552f"
   end
 
   depends_on arch: :arm64
